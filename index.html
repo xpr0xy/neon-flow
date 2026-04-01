@@ -132,8 +132,8 @@
 
         // Accelerometer — tilt pushes particles
         if (hasAccel) {
-          this.vx += accel.x * 0.15;
-          this.vy += accel.y * 0.15;
+          this.vx -= accel.x * 0.15;
+          this.vy -= accel.y * 0.15;
         }
 
         // Mouse/touch sculpting
@@ -177,22 +177,11 @@
         this.y += this.vy;
         this.life--;
 
-        // Soft wrap with margin
-        const m = 10;
-        if (this.x < -m) this.x += W + m * 2;
-        if (this.x > W + m) this.x -= W + m * 2;
-        if (this.y < -m) this.y += H + m * 2;
-        if (this.y > H + m) this.y -= H + m * 2;
-
-        // Edge gravity — slight pull back toward center
-        const cx = W / 2, cy = H / 2;
-        const fromCenter = Math.sqrt((this.x - cx) ** 2 + (this.y - cy) ** 2);
-        const maxDist = Math.min(W, H) * 0.6;
-        if (fromCenter > maxDist) {
-          const edgeForce = (fromCenter - maxDist) / maxDist * 0.02;
-          this.vx += (cx - this.x) / fromCenter * edgeForce;
-          this.vy += (cy - this.y) / fromCenter * edgeForce;
-        }
+        // Hard boundaries — contain within viewport
+        if (this.x < 0) { this.x = 0; this.vx = Math.abs(this.vx) * 0.5; }
+        if (this.x > W) { this.x = W; this.vx = -Math.abs(this.vx) * 0.5; }
+        if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy) * 0.5; }
+        if (this.y > H) { this.y = H; this.vy = -Math.abs(this.vy) * 0.5; }
 
         if (this.life <= 0) this.reset();
       }
