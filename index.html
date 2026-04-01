@@ -281,7 +281,7 @@
           // accelIncludingGravity: phone flat = (0, 0, 9.8)
           // tilt left = positive x, tilt forward = positive y
           // We want tilt left = particles go left, tilt forward = particles go down
-          accel.x = (e.accelerationIncludingGravity.x || 0) * 0.4;
+          accel.x = -(e.accelerationIncludingGravity.x || 0) * 0.4;
           accel.y = (e.accelerationIncludingGravity.y || 0) * 0.4;
           hasAccel = true;
         }
