@@ -18,22 +18,22 @@
       left: 12px;
       font-family: 'Courier New', monospace;
       font-size: 10px;
-      color: rgba(255,255,255,0.25);
+      color: rgba(255,255,255,0.2);
       pointer-events: none;
       user-select: none;
     }
-    .ui span { color: rgba(180, 130, 255, 0.4); }
+    .ui span { color: rgba(180, 130, 255, 0.35); }
   </style>
 </head>
 <body>
   <canvas id="c"></canvas>
-  <div class="ui"><span>neon flow</span> — move / tilt to sculpt</div>
+  <div class="ui"><span>neon flow</span> — touch to heat · tilt to pour · dblclick colors</div>
   <script>
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     let W, H;
     let mouse = { x: 0, y: 0, px: 0, py: 0, active: false, speed: 0 };
-    let accel = { x: 0, y: 0, z: 0 };
+    let accel = { x: 0, y: 0 };
     let hasAccel = false;
     let particles = [];
     let time = 0;
@@ -75,122 +75,153 @@
       );
     }
 
-    // Flow field with time evolution
-    function flowAngle(x, y, t) {
-      const scale = 0.002;
-      const n1 = noise(x * scale, y * scale + t * 0.0002);
-      const n2 = noise(x * scale + 50, y * scale + t * 0.00015);
-      const n3 = noise(x * scale * 0.5 + 100, y * scale * 0.5 + t * 0.0001);
-      return (n1 + n2 * 0.5 + n3 * 0.3) * Math.PI * 4;
+    // Curl noise for divergence-free flow (no sinks/sources)
+    function curlNoise(x, y, t) {
+      const eps = 0.5;
+      const s = 0.0015;
+      const tS = t * 0.0002;
+
+      // Partial derivatives
+      const n1 = noise(x * s, y * s + tS);
+      const n2 = noise(x * s, y * s + eps + tS);
+      const n3 = noise(x * s + eps, y * s + tS);
+      const n4 = noise(x * s + 50, y * s + tS * 0.7);
+
+      // Curl = (dN/dy, -dN/dx)
+      const curlX = (n2 - n1) / eps;
+      const curlY = -(n3 - n1) / eps;
+
+      // Add subtle large-scale flow
+      return {
+        x: curlX * 800 + n4 * 0.4,
+        y: curlY * 800 + noise(x * s * 0.3 + 100, y * s * 0.3 + tS * 0.5) * 0.3
+      };
     }
 
-    // Color palettes
+    // Color palettes — each has hot and cold ranges
     const palettes = [
-      // Warm lava
-      { hMin: 330, hMax: 50, s: 90, lMin: 45, lMax: 65 },
-      // Electric purple
-      { hMin: 260, hMax: 310, s: 85, lMin: 50, lMax: 70 },
-      // Ocean teal
-      { hMin: 160, hMax: 210, s: 80, lMin: 40, lMax: 60 },
-      // Fire
-      { hMin: 0, hMax: 40, s: 95, lMin: 50, lMax: 70 },
+      // Lava: hot orange/yellow, cold deep red/purple
+      { hot: [45, 95, 65], cold: [340, 90, 35], name: 'lava' },
+      // Ocean: hot cyan, cold deep blue
+      { hot: [170, 90, 60], cold: [230, 85, 30], name: 'ocean' },
+      // Aurora: hot green, cold purple
+      { hot: [130, 80, 55], cold: [280, 90, 40], name: 'aurora' },
+      // Ember: hot gold, cold crimson
+      { hot: [35, 100, 60], cold: [0, 95, 35], name: 'ember' },
     ];
-    let palette = 0;
+    let paletteIdx = 0;
 
-    function getColor(speed, life, px, py) {
-      const p = palettes[palette];
-      // Hue shifts with position and speed
-      const posHue = ((px / W) + (py / H)) * 0.3;
-      const speedHue = speed * 0.05;
-      let h = p.hMin + (posHue + speedHue) * (p.hMax - p.hMin);
-      // Wrap hue for palettes that cross 360
-      if (h > 360) h -= 360;
-      if (h < 0) h += 360;
-      const l = p.lMin + (1 - life) * (p.lMax - p.lMin);
-      return `hsla(${h}, ${p.s}%, ${l}%, `;
+    function getColor(temp, life, speed) {
+      const p = palettes[paletteIdx];
+      // Blend between hot and cold based on temperature (0-1)
+      const h = lerp(p.cold[0], p.hot[0], temp);
+      const s = lerp(p.cold[1], p.hot[1], temp);
+      const l = lerp(p.cold[2], p.hot[2], temp) + speed * 3;
+      const a = life * (0.3 + temp * 0.35);
+      return [h % 360, s, Math.min(l, 80), a];
     }
 
-    // Particle
+    // Particle types
+    const WAX = 0;
+    const BUBBLE = 1;
+
     class Particle {
-      constructor() {
+      constructor(type) {
+        this.type = type;
         this.reset();
       }
       reset() {
         this.x = Math.random() * W;
-        this.y = Math.random() * H;
-        this.vx = (Math.random() - 0.5) * 0.5;
-        this.vy = (Math.random() - 0.5) * 0.5;
-        this.life = 300 + Math.random() * 500;
+        this.y = this.type === BUBBLE ? H * 0.8 + Math.random() * H * 0.2 : Math.random() * H;
+        this.vx = (Math.random() - 0.5) * 0.3;
+        this.vy = this.type === BUBBLE ? -1 - Math.random() * 0.5 : 0;
+        this.life = 500 + Math.random() * 700;
         this.maxLife = this.life;
-        this.size = 0.8 + Math.random() * 2;
+        this.temp = 0.3 + Math.random() * 0.4;
+        this.baseSize = this.type === BUBBLE ? 1 + Math.random() : 1.5 + Math.random() * 2.5;
       }
       update() {
         // Flow field
-        const angle = flowAngle(this.x, this.y, time);
-        this.vx += Math.cos(angle) * 0.12;
-        this.vy += Math.sin(angle) * 0.12;
+        const flow = curlNoise(this.x, this.y, time);
+        this.vx += flow.x * 0.08;
+        this.vy += flow.y * 0.08;
 
-        // Base gravity — particles always pull down (lava lamp settling)
-        this.vy += 0.04;
+        // Buoyancy — based on temperature
+        const buoyancy = (this.temp - 0.5) * 0.08;
+        this.vy -= buoyancy;
 
-        // Accelerometer — tilt overrides gravity
-        if (hasAccel) {
-          this.vx -= accel.x * 0.2;
-          this.vy -= accel.y * 0.2;
+        // Gravity — always some pull down
+        this.vy += 0.03;
+
+        // Bubbles always want to rise
+        if (this.type === BUBBLE) {
+          this.vy -= 0.06;
+          this.temp = Math.min(this.temp + 0.001, 1);
         }
 
-        // Mouse/touch sculpting
+        // Accelerometer
+        if (hasAccel) {
+          this.vx -= accel.x * 0.25;
+          this.vy -= accel.y * 0.25;
+        }
+
+        // Mouse/touch — heat and sculpt
         if (mouse.active) {
           const dx = mouse.x - this.x;
           const dy = mouse.y - this.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
-          const radius = 250;
+          const radius = 280;
 
           if (dist < radius && dist > 1) {
-            const force = Math.pow((radius - dist) / radius, 1.5);
+            const force = Math.pow((radius - dist) / radius, 2);
 
-            // Strong radial attraction
-            this.vx += (dx / dist) * force * 1.2;
-            this.vy += (dy / dist) * force * 1.2;
+            // Heat up near cursor
+            this.temp = Math.min(this.temp + force * 0.05, 1);
 
-            // Swirl based on mouse movement direction
+            // Attract
+            this.vx += (dx / dist) * force * 1.5;
+            this.vy += (dy / dist) * force * 1.5;
+
+            // Swirl
             const perpX = -dy / dist;
             const perpY = dx / dist;
-            const swirlStrength = Math.min(mouse.speed * 0.08, 2);
-            this.vx += perpX * force * (0.6 + swirlStrength);
-            this.vy += perpY * force * (0.6 + swirlStrength);
+            const swirl = Math.min(mouse.speed * 0.06, 1.5);
+            this.vx += perpX * force * (0.5 + swirl);
+            this.vy += perpY * force * (0.5 + swirl);
 
-            // Boost life near cursor
-            this.life = Math.min(this.life + 3, this.maxLife);
+            this.life = Math.min(this.life + 2, this.maxLife);
           }
         }
 
-        // Damping
-        this.vx *= 0.95;
-        this.vy *= 0.95;
+        // Cool down slowly
+        this.temp = Math.max(this.temp - 0.0005, 0);
 
-        // Clamp velocity
+        // Damping
+        this.vx *= 0.96;
+        this.vy *= 0.96;
+
+        // Clamp
         const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-        if (speed > 8) {
-          this.vx = (this.vx / speed) * 8;
-          this.vy = (this.vy / speed) * 8;
+        if (speed > 7) {
+          this.vx = (this.vx / speed) * 7;
+          this.vy = (this.vy / speed) * 7;
         }
 
         this.x += this.vx;
         this.y += this.vy;
         this.life--;
 
-        // Hard boundaries — bounce and collect
-        if (this.x < 0) { this.x = 0; this.vx = Math.abs(this.vx) * 0.7; }
-        if (this.x > W) { this.x = W; this.vx = -Math.abs(this.vx) * 0.7; }
-        if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy) * 0.7; }
+        // Boundaries — bounce and collect
+        if (this.x < 0) { this.x = 0; this.vx = Math.abs(this.vx) * 0.6; }
+        if (this.x > W) { this.x = W; this.vx = -Math.abs(this.vx) * 0.6; }
+        if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy) * 0.6; }
         if (this.y > H) {
           this.y = H;
-          // Stick to bottom briefly before bouncing — lava lamp pooling
-          if (Math.abs(this.vy) > 0.5) {
-            this.vy = -Math.abs(this.vy) * 0.4;
+          if (Math.abs(this.vy) > 0.4) {
+            this.vy = -Math.abs(this.vy) * 0.35;
           } else {
             this.vy = 0;
+            this.temp = Math.max(this.temp - 0.005, 0); // cool faster at bottom
           }
         }
 
@@ -199,30 +230,41 @@
       draw() {
         const lifeRatio = this.life / this.maxLife;
         const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-        const alpha = lifeRatio * 0.55;
-        const color = getColor(speed, lifeRatio, this.x, this.y);
+        const [h, s, l, a] = getColor(this.temp, lifeRatio, speed);
 
-        // Glow
-        ctx.fillStyle = color + (alpha * 0.3) + ')';
+        if (a < 0.01) return;
+
+        const size = this.baseSize * (0.8 + this.temp * 0.5);
+        const color = `hsla(${h}, ${s}%, ${l}%, `;
+        const glowColor = `hsla(${h}, ${s + 5}%, ${Math.min(l + 15, 90)}%, `;
+
+        // Outer glow
+        ctx.fillStyle = glowColor + (a * 0.15) + ')';
         ctx.beginPath();
-        ctx.arc(this.x, this.y, this.size * 3, 0, Math.PI * 2);
+        ctx.arc(this.x, this.y, size * 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Mid glow
+        ctx.fillStyle = glowColor + (a * 0.3) + ')';
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, size * 2, 0, Math.PI * 2);
         ctx.fill();
 
         // Core
-        ctx.fillStyle = color + alpha + ')';
+        ctx.fillStyle = color + a + ')';
         ctx.beginPath();
-        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+        ctx.arc(this.x, this.y, size, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
-    // Init particles
-    const count = Math.min(2000, Math.floor((window.innerWidth * window.innerHeight) / 500));
+    // Init particles — 85% wax, 15% bubbles
+    const count = Math.min(1800, Math.floor((W * H) / 600));
     for (let i = 0; i < count; i++) {
-      particles.push(new Particle());
+      particles.push(new Particle(Math.random() < 0.15 ? BUBBLE : WAX));
     }
 
-    // Mouse/touch handlers
+    // Mouse/touch
     function updateMouse(x, y) {
       mouse.px = mouse.x;
       mouse.py = mouse.y;
@@ -234,7 +276,6 @@
 
     document.addEventListener('mousemove', e => updateMouse(e.clientX, e.clientY));
     document.addEventListener('mouseleave', () => { mouse.active = false; });
-
     document.addEventListener('touchmove', e => {
       e.preventDefault();
       updateMouse(e.touches[0].clientX, e.touches[0].clientY);
@@ -246,7 +287,6 @@
 
     // Accelerometer
     if (window.DeviceMotionEvent) {
-      // iOS 13+ requires permission
       if (typeof DeviceMotionEvent.requestPermission === 'function') {
         document.addEventListener('click', () => {
           DeviceMotionEvent.requestPermission().then(state => {
@@ -257,34 +297,37 @@
         initAccel();
       }
     }
-
     function initAccel() {
       window.addEventListener('devicemotion', e => {
         if (e.accelerationIncludingGravity) {
           accel.x = (e.accelerationIncludingGravity.x || 0) * 0.3;
           accel.y = -(e.accelerationIncludingGravity.y || 0) * 0.3;
-          accel.z = e.accelerationIncludingGravity.z || 0;
           hasAccel = true;
         }
       });
     }
 
-    // Cycle palette on double tap / click
+    // Double click cycles palette
     document.addEventListener('dblclick', () => {
-      palette = (palette + 1) % palettes.length;
+      paletteIdx = (paletteIdx + 1) % palettes.length;
     });
 
-    // Render
+    // Render — screen blend for additive glow
     function frame() {
-      // Fade trail
-      ctx.fillStyle = 'rgba(5, 5, 8, 0.06)';
+      // Slow fade
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = 'rgba(5, 5, 8, 0.05)';
       ctx.fillRect(0, 0, W, H);
+
+      // Additive blending for glow
+      ctx.globalCompositeOperation = 'screen';
 
       for (const p of particles) {
         p.update();
         p.draw();
       }
 
+      ctx.globalCompositeOperation = 'source-over';
       time++;
       requestAnimationFrame(frame);
     }
