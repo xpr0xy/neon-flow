@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>neon flow</title>
+  <style>
+    * { margin: 0; padding: 0; }
+    body {
+      background: #050508;
+      overflow: hidden;
+      cursor: crosshair;
+    }
+    canvas { display: block; }
+    .ui {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      color: rgba(255,255,255,0.3);
+      pointer-events: none;
+      user-select: none;
+    }
+    .ui span { color: rgba(180, 130, 255, 0.5); }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="ui"><span>neon flow</span> — move mouse to sculpt</div>
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    let W, H;
+    let mouse = { x: 0, y: 0, active: false };
+    let particles = [];
+    let time = 0;
+
+    function resize() {
+      W = canvas.width = window.innerWidth;
+      H = canvas.height = window.innerHeight;
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    // Perlin-ish noise (simplex-inspired, 2D)
+    const PERM = new Uint8Array(512);
+    const GRAD = [[1,1],[-1,1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+    for (let i = 0; i < 256; i++) PERM[i] = i;
+    for (let i = 255; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [PERM[i], PERM[j]] = [PERM[j], PERM[i]];
+    }
+    for (let i = 0; i < 256; i++) PERM[i + 256] = PERM[i];
+
+    function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+    function lerp(a, b, t) { return a + t * (b - a); }
+    function dot2(g, x, y) { return g[0] * x + g[1] * y; }
+
+    function noise(x, y) {
+      const X = Math.floor(x) & 255;
+      const Y = Math.floor(y) & 255;
+      x -= Math.floor(x);
+      y -= Math.floor(y);
+      const u = fade(x);
+      const v = fade(y);
+      const a = PERM[X] + Y;
+      const b = PERM[X + 1] + Y;
+      return lerp(
+        lerp(dot2(GRAD[PERM[a] & 7], x, y), dot2(GRAD[PERM[b] & 7], x - 1, y), u),
+        lerp(dot2(GRAD[PERM[a + 1] & 7], x, y - 1), dot2(GRAD[PERM[b + 1] & 7], x - 1, y - 1), u),
+        v
+      );
+    }
+
+    // Flow field
+    function flowAngle(x, y, t) {
+      const scale = 0.003;
+      const n1 = noise(x * scale, y * scale + t * 0.0003);
+      const n2 = noise(x * scale + 100, y * scale + t * 0.0002);
+      return (n1 + n2 * 0.5) * Math.PI * 4;
+    }
+
+    // Particle
+    class Particle {
+      constructor() {
+        this.reset();
+      }
+      reset() {
+        this.x = Math.random() * W;
+        this.y = Math.random() * H;
+        this.vx = 0;
+        this.vy = 0;
+        this.life = 200 + Math.random() * 400;
+        this.maxLife = this.life;
+        this.hue = 260 + Math.random() * 40; // purple range
+        this.size = 0.5 + Math.random() * 1.5;
+      }
+      update() {
+        // Flow field influence
+        const angle = flowAngle(this.x, this.y, time);
+        const speed = 1.2;
+        this.vx += Math.cos(angle) * speed * 0.15;
+        this.vy += Math.sin(angle) * speed * 0.15;
+
+        // Mouse influence
+        if (mouse.active) {
+          const dx = mouse.x - this.x;
+          const dy = mouse.y - this.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 200) {
+            const force = (200 - dist) / 200;
+            // Attract and swirl
+            this.vx += (dx / dist) * force * 0.3;
+            this.vy += (dy / dist) * force * 0.3;
+            // Tangential for swirl
+            this.vx += (-dy / dist) * force * 0.2;
+            this.vy += (dx / dist) * force * 0.2;
+          }
+        }
+
+        // Damping
+        this.vx *= 0.94;
+        this.vy *= 0.94;
+
+        this.x += this.vx;
+        this.y += this.vy;
+        this.life--;
+
+        // Wrap edges
+        if (this.x < 0) this.x += W;
+        if (this.x > W) this.x -= W;
+        if (this.y < 0) this.y += H;
+        if (this.y > H) this.y -= H;
+
+        if (this.life <= 0) this.reset();
+      }
+      draw() {
+        const alpha = (this.life / this.maxLife) * 0.6;
+        const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+        const hue = this.hue + speed * 10;
+        ctx.fillStyle = `hsla(${hue}, 80%, 60%, ${alpha})`;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Init particles
+    const PARTICLE_COUNT = 1500;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      particles.push(new Particle());
+    }
+
+    // Mouse
+    document.addEventListener('mousemove', e => {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
+      mouse.active = true;
+    });
+    document.addEventListener('mouseleave', () => { mouse.active = false; });
+
+    // Touch
+    document.addEventListener('touchmove', e => {
+      e.preventDefault();
+      mouse.x = e.touches[0].clientX;
+      mouse.y = e.touches[0].clientY;
+      mouse.active = true;
+    }, { passive: false });
+    document.addEventListener('touchend', () => { mouse.active = false; });
+
+    // Render
+    function frame() {
+      // Fade previous frame
+      ctx.fillStyle = 'rgba(5, 5, 8, 0.08)';
+      ctx.fillRect(0, 0, W, H);
+
+      // Update and draw particles
+      for (const p of particles) {
+        p.update();
+        p.draw();
+      }
+
+      time++;
+      requestAnimationFrame(frame);
+    }
+
+    // Initial clear
+    ctx.fillStyle = '#050508';
+    ctx.fillRect(0, 0, W, H);
+    frame();
+  </script>
+</body>
+</html>
