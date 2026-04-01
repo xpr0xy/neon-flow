@@ -202,7 +202,9 @@
           if (this.vy > 0.3) {
             this.vy = -this.vy * 0.35;
           } else {
+            // Stuck at bottom — nudge sideways so particles spread, don't clump
             this.vy = 0;
+            this.vx += (Math.random() - 0.5) * 0.15;
             this.temp = Math.max(this.temp - 0.003, 0);
           }
         }
@@ -261,7 +263,10 @@
     document.addEventListener('touchstart', e => {
       updateMouse(e.touches[0].clientX, e.touches[0].clientY);
     });
-    document.addEventListener('touchend', () => { mouse.active = false; });
+    document.addEventListener('touchend', () => {
+      mouse.active = false;
+      mouse.speed = 0;
+    });
 
     // Accelerometer
     if (window.DeviceMotionEvent) {
@@ -278,9 +283,9 @@
     function initAccel() {
       window.addEventListener('devicemotion', e => {
         if (e.accelerationIncludingGravity) {
-          // accelIncludingGravity: phone flat = (0, 0, 9.8)
-          // tilt left = positive x, tilt forward = positive y
-          // We want tilt left = particles go left, tilt forward = particles go down
+          // Raw sensor: tilt left = positive x, tilt forward = positive y
+          // We negate x so tilt left = particles go left
+          // We keep y positive so tilt forward = particles go down
           accel.x = -(e.accelerationIncludingGravity.x || 0) * 0.4;
           accel.y = (e.accelerationIncludingGravity.y || 0) * 0.4;
           hasAccel = true;
