@@ -2,37 +2,39 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>neon flow</title>
   <style>
     * { margin: 0; padding: 0; }
     body {
       background: #050508;
       overflow: hidden;
-      cursor: crosshair;
+      touch-action: none;
     }
     canvas { display: block; }
     .ui {
       position: fixed;
-      bottom: 16px;
-      left: 16px;
+      bottom: 12px;
+      left: 12px;
       font-family: 'Courier New', monospace;
-      font-size: 11px;
-      color: rgba(255,255,255,0.3);
+      font-size: 10px;
+      color: rgba(255,255,255,0.25);
       pointer-events: none;
       user-select: none;
     }
-    .ui span { color: rgba(180, 130, 255, 0.5); }
+    .ui span { color: rgba(180, 130, 255, 0.4); }
   </style>
 </head>
 <body>
   <canvas id="c"></canvas>
-  <div class="ui"><span>neon flow</span> — move mouse to sculpt</div>
+  <div class="ui"><span>neon flow</span> — move / tilt to sculpt</div>
   <script>
     const canvas = document.getElementById('c');
     const ctx = canvas.getContext('2d');
     let W, H;
-    let mouse = { x: 0, y: 0, active: false };
+    let mouse = { x: 0, y: 0, px: 0, py: 0, active: false, speed: 0 };
+    let accel = { x: 0, y: 0, z: 0 };
+    let hasAccel = false;
     let particles = [];
     let time = 0;
 
@@ -43,7 +45,7 @@
     resize();
     window.addEventListener('resize', resize);
 
-    // Perlin-ish noise (simplex-inspired, 2D)
+    // Perlin noise
     const PERM = new Uint8Array(512);
     const GRAD = [[1,1],[-1,1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
     for (let i = 0; i < 256; i++) PERM[i] = i;
@@ -73,12 +75,39 @@
       );
     }
 
-    // Flow field
+    // Flow field with time evolution
     function flowAngle(x, y, t) {
-      const scale = 0.003;
-      const n1 = noise(x * scale, y * scale + t * 0.0003);
-      const n2 = noise(x * scale + 100, y * scale + t * 0.0002);
-      return (n1 + n2 * 0.5) * Math.PI * 4;
+      const scale = 0.002;
+      const n1 = noise(x * scale, y * scale + t * 0.0002);
+      const n2 = noise(x * scale + 50, y * scale + t * 0.00015);
+      const n3 = noise(x * scale * 0.5 + 100, y * scale * 0.5 + t * 0.0001);
+      return (n1 + n2 * 0.5 + n3 * 0.3) * Math.PI * 4;
+    }
+
+    // Color palettes
+    const palettes = [
+      // Warm lava
+      { hMin: 330, hMax: 50, s: 90, lMin: 45, lMax: 65 },
+      // Electric purple
+      { hMin: 260, hMax: 310, s: 85, lMin: 50, lMax: 70 },
+      // Ocean teal
+      { hMin: 160, hMax: 210, s: 80, lMin: 40, lMax: 60 },
+      // Fire
+      { hMin: 0, hMax: 40, s: 95, lMin: 50, lMax: 70 },
+    ];
+    let palette = 0;
+
+    function getColor(speed, life, px, py) {
+      const p = palettes[palette];
+      // Hue shifts with position and speed
+      const posHue = ((px / W) + (py / H)) * 0.3;
+      const speedHue = speed * 0.05;
+      let h = p.hMin + (posHue + speedHue) * (p.hMax - p.hMin);
+      // Wrap hue for palettes that cross 360
+      if (h > 360) h -= 360;
+      if (h < 0) h += 360;
+      const l = p.lMin + (1 - life) * (p.lMax - p.lMin);
+      return `hsla(${h}, ${p.s}%, ${l}%, `;
     }
 
     // Particle
@@ -89,57 +118,98 @@
       reset() {
         this.x = Math.random() * W;
         this.y = Math.random() * H;
-        this.vx = 0;
-        this.vy = 0;
-        this.life = 200 + Math.random() * 400;
+        this.vx = (Math.random() - 0.5) * 0.5;
+        this.vy = (Math.random() - 0.5) * 0.5;
+        this.life = 300 + Math.random() * 500;
         this.maxLife = this.life;
-        this.hue = 260 + Math.random() * 40; // purple range
-        this.size = 0.5 + Math.random() * 1.5;
+        this.size = 0.8 + Math.random() * 2;
       }
       update() {
-        // Flow field influence
+        // Flow field
         const angle = flowAngle(this.x, this.y, time);
-        const speed = 1.2;
-        this.vx += Math.cos(angle) * speed * 0.15;
-        this.vy += Math.sin(angle) * speed * 0.15;
+        this.vx += Math.cos(angle) * 0.12;
+        this.vy += Math.sin(angle) * 0.12;
 
-        // Mouse influence
+        // Accelerometer — tilt pushes particles
+        if (hasAccel) {
+          this.vx += accel.x * 0.15;
+          this.vy += accel.y * 0.15;
+        }
+
+        // Mouse/touch sculpting
         if (mouse.active) {
           const dx = mouse.x - this.x;
           const dy = mouse.y - this.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < 200) {
-            const force = (200 - dist) / 200;
-            // Attract and swirl
-            this.vx += (dx / dist) * force * 0.3;
-            this.vy += (dy / dist) * force * 0.3;
-            // Tangential for swirl
-            this.vx += (-dy / dist) * force * 0.2;
-            this.vy += (dx / dist) * force * 0.2;
+          const radius = 250;
+
+          if (dist < radius && dist > 1) {
+            const force = Math.pow((radius - dist) / radius, 1.5);
+
+            // Strong radial attraction
+            this.vx += (dx / dist) * force * 1.2;
+            this.vy += (dy / dist) * force * 1.2;
+
+            // Swirl based on mouse movement direction
+            const perpX = -dy / dist;
+            const perpY = dx / dist;
+            const swirlStrength = Math.min(mouse.speed * 0.08, 2);
+            this.vx += perpX * force * (0.6 + swirlStrength);
+            this.vy += perpY * force * (0.6 + swirlStrength);
+
+            // Boost life near cursor
+            this.life = Math.min(this.life + 3, this.maxLife);
           }
         }
 
         // Damping
-        this.vx *= 0.94;
-        this.vy *= 0.94;
+        this.vx *= 0.95;
+        this.vy *= 0.95;
+
+        // Clamp velocity
+        const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+        if (speed > 6) {
+          this.vx = (this.vx / speed) * 6;
+          this.vy = (this.vy / speed) * 6;
+        }
 
         this.x += this.vx;
         this.y += this.vy;
         this.life--;
 
-        // Wrap edges
-        if (this.x < 0) this.x += W;
-        if (this.x > W) this.x -= W;
-        if (this.y < 0) this.y += H;
-        if (this.y > H) this.y -= H;
+        // Soft wrap with margin
+        const m = 10;
+        if (this.x < -m) this.x += W + m * 2;
+        if (this.x > W + m) this.x -= W + m * 2;
+        if (this.y < -m) this.y += H + m * 2;
+        if (this.y > H + m) this.y -= H + m * 2;
+
+        // Edge gravity — slight pull back toward center
+        const cx = W / 2, cy = H / 2;
+        const fromCenter = Math.sqrt((this.x - cx) ** 2 + (this.y - cy) ** 2);
+        const maxDist = Math.min(W, H) * 0.6;
+        if (fromCenter > maxDist) {
+          const edgeForce = (fromCenter - maxDist) / maxDist * 0.02;
+          this.vx += (cx - this.x) / fromCenter * edgeForce;
+          this.vy += (cy - this.y) / fromCenter * edgeForce;
+        }
 
         if (this.life <= 0) this.reset();
       }
       draw() {
-        const alpha = (this.life / this.maxLife) * 0.6;
+        const lifeRatio = this.life / this.maxLife;
         const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-        const hue = this.hue + speed * 10;
-        ctx.fillStyle = `hsla(${hue}, 80%, 60%, ${alpha})`;
+        const alpha = lifeRatio * 0.55;
+        const color = getColor(speed, lifeRatio, this.x, this.y);
+
+        // Glow
+        ctx.fillStyle = color + (alpha * 0.3) + ')';
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size * 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Core
+        ctx.fillStyle = color + alpha + ')';
         ctx.beginPath();
         ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
         ctx.fill();
@@ -147,35 +217,69 @@
     }
 
     // Init particles
-    const PARTICLE_COUNT = 1500;
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
+    const count = Math.min(2000, Math.floor((window.innerWidth * window.innerHeight) / 500));
+    for (let i = 0; i < count; i++) {
       particles.push(new Particle());
     }
 
-    // Mouse
-    document.addEventListener('mousemove', e => {
-      mouse.x = e.clientX;
-      mouse.y = e.clientY;
+    // Mouse/touch handlers
+    function updateMouse(x, y) {
+      mouse.px = mouse.x;
+      mouse.py = mouse.y;
+      mouse.x = x;
+      mouse.y = y;
       mouse.active = true;
-    });
+      mouse.speed = Math.sqrt((x - mouse.px) ** 2 + (y - mouse.py) ** 2);
+    }
+
+    document.addEventListener('mousemove', e => updateMouse(e.clientX, e.clientY));
     document.addEventListener('mouseleave', () => { mouse.active = false; });
 
-    // Touch
     document.addEventListener('touchmove', e => {
       e.preventDefault();
-      mouse.x = e.touches[0].clientX;
-      mouse.y = e.touches[0].clientY;
-      mouse.active = true;
+      updateMouse(e.touches[0].clientX, e.touches[0].clientY);
     }, { passive: false });
+    document.addEventListener('touchstart', e => {
+      updateMouse(e.touches[0].clientX, e.touches[0].clientY);
+    });
     document.addEventListener('touchend', () => { mouse.active = false; });
+
+    // Accelerometer
+    if (window.DeviceMotionEvent) {
+      // iOS 13+ requires permission
+      if (typeof DeviceMotionEvent.requestPermission === 'function') {
+        document.addEventListener('click', () => {
+          DeviceMotionEvent.requestPermission().then(state => {
+            if (state === 'granted') initAccel();
+          }).catch(() => {});
+        }, { once: true });
+      } else {
+        initAccel();
+      }
+    }
+
+    function initAccel() {
+      window.addEventListener('devicemotion', e => {
+        if (e.accelerationIncludingGravity) {
+          accel.x = (e.accelerationIncludingGravity.x || 0) * 0.3;
+          accel.y = -(e.accelerationIncludingGravity.y || 0) * 0.3;
+          accel.z = e.accelerationIncludingGravity.z || 0;
+          hasAccel = true;
+        }
+      });
+    }
+
+    // Cycle palette on double tap / click
+    document.addEventListener('dblclick', () => {
+      palette = (palette + 1) % palettes.length;
+    });
 
     // Render
     function frame() {
-      // Fade previous frame
-      ctx.fillStyle = 'rgba(5, 5, 8, 0.08)';
+      // Fade trail
+      ctx.fillStyle = 'rgba(5, 5, 8, 0.06)';
       ctx.fillRect(0, 0, W, H);
 
-      // Update and draw particles
       for (const p of particles) {
         p.update();
         p.draw();
@@ -185,7 +289,6 @@
       requestAnimationFrame(frame);
     }
 
-    // Initial clear
     ctx.fillStyle = '#050508';
     ctx.fillRect(0, 0, W, H);
     frame();
