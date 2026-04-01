@@ -130,10 +130,13 @@
         this.vx += Math.cos(angle) * 0.12;
         this.vy += Math.sin(angle) * 0.12;
 
-        // Accelerometer — tilt pushes particles
+        // Base gravity — particles always pull down (lava lamp settling)
+        this.vy += 0.04;
+
+        // Accelerometer — tilt overrides gravity
         if (hasAccel) {
-          this.vx -= accel.x * 0.15;
-          this.vy -= accel.y * 0.15;
+          this.vx -= accel.x * 0.2;
+          this.vy -= accel.y * 0.2;
         }
 
         // Mouse/touch sculpting
@@ -168,20 +171,28 @@
 
         // Clamp velocity
         const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-        if (speed > 6) {
-          this.vx = (this.vx / speed) * 6;
-          this.vy = (this.vy / speed) * 6;
+        if (speed > 8) {
+          this.vx = (this.vx / speed) * 8;
+          this.vy = (this.vy / speed) * 8;
         }
 
         this.x += this.vx;
         this.y += this.vy;
         this.life--;
 
-        // Hard boundaries — contain within viewport
-        if (this.x < 0) { this.x = 0; this.vx = Math.abs(this.vx) * 0.5; }
-        if (this.x > W) { this.x = W; this.vx = -Math.abs(this.vx) * 0.5; }
-        if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy) * 0.5; }
-        if (this.y > H) { this.y = H; this.vy = -Math.abs(this.vy) * 0.5; }
+        // Hard boundaries — bounce and collect
+        if (this.x < 0) { this.x = 0; this.vx = Math.abs(this.vx) * 0.7; }
+        if (this.x > W) { this.x = W; this.vx = -Math.abs(this.vx) * 0.7; }
+        if (this.y < 0) { this.y = 0; this.vy = Math.abs(this.vy) * 0.7; }
+        if (this.y > H) {
+          this.y = H;
+          // Stick to bottom briefly before bouncing — lava lamp pooling
+          if (Math.abs(this.vy) > 0.5) {
+            this.vy = -Math.abs(this.vy) * 0.4;
+          } else {
+            this.vy = 0;
+          }
+        }
 
         if (this.life <= 0) this.reset();
       }
